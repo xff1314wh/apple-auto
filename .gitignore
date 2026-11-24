@@ -1,0 +1,16 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 运行时产物（每次运行会变，不上传）
+data/wda_sid.txt
+data/shots/
+data/logs/
+
+# 安装包：本地保留备用，不上传仓库
+setup/installers/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
