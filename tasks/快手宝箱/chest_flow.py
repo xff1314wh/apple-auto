@@ -25,6 +25,7 @@ import quick  # noqa: E402
 import ocr as ocr_mod  # noqa: E402
 import issue_checker as checker_mod  # noqa: E402
 import branch_tap  # noqa: E402
+import rotlog  # noqa: E402
 from guard import IssueGuard  # noqa: E402
 
 # 素材 stem，问题分支配置从对应 json 读取
@@ -51,11 +52,7 @@ os.makedirs(os.path.dirname(LOG), exist_ok=True)
 def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
-    try:
-        with open(LOG, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
+    rotlog.append_line(LOG, line)
 
 
 def _load_issues():
