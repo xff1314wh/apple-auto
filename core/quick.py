@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -14,7 +15,14 @@ SID_FILE = os.path.join(DATA, "wda_sid.txt")
 os.makedirs(os.path.join(DATA, "shots"), exist_ok=True)
 
 
-def _req(method, path, payload=None, timeout=40):
+def _session_dead(resp):
+    if not isinstance(resp, dict):
+        return False
+    s = json.dumps(resp, ensure_ascii=False)
+    return ("invalid session id" in s) or ("Session does not exist" in s)
+
+
+def _send_once(method, path, payload, timeout):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method)
     if data:
@@ -31,8 +39,21 @@ def _req(method, path, payload=None, timeout=40):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _req(method, path, payload=None, timeout=40, _retried=False):
+    resp = _send_once(method, path, payload, timeout)
+    if _retried or not _session_dead(resp):
+        return resp
+    old_sid = session()
+    nr = start()
+    if not nr.get("session"):
+        return resp
+    time.sleep(0.4)  # 新建 session 需要一点时间才在 WDA 注册好，否则紧接着的请求仍 404
+    path = path.replace("/session/" + old_sid, "/session/" + nr["session"])
+    return _req(method, path, payload, timeout, _retried=True)
+
+
 def session():
-    return open(SID_FILE, encoding="utf-8").read().strip()
+    return open(SID_FILE, encoding="utf-8-sig").read().strip()
 
 
 def start(bundle=""):
@@ -46,6 +67,33 @@ def start(bundle=""):
         return {"error": r}
     open(SID_FILE, "w", encoding="utf-8").write(sid)
     return {"session": sid}
+
+
+def ensure_session():
+    """任务开始前统一入口：校验当前会话是否还活着，失效才重建。
+
+    判活顺序：读本地 sid → 探活一次；有效就保留，无 sid / 失效 / 连不上则重建。
+    重连判断只收敛在连接层，GUI、渲染模板、手工脚本都调这里，不各自实现。
+
+    返回 {"session": sid, "reconnected": bool, "error": None | 详情}。
+    """
+    sid = ""
+    try:
+        sid = session()
+    except Exception:
+        sid = ""
+
+    if sid:
+        probe = _send_once("GET", f"/session/{sid}/screenshot", None, 10)
+        alive = not (isinstance(probe, dict)
+                     and (probe.get("error") or _session_dead(probe)))
+        if alive:
+            return {"session": sid, "reconnected": False, "error": None}
+
+    nr = start("")
+    if nr.get("session"):
+        return {"session": nr["session"], "reconnected": True, "error": None}
+    return {"session": sid, "reconnected": False, "error": nr}
 
 
 def go_back(y=448):

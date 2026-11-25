@@ -43,7 +43,7 @@ def wda_ok(timeout=4):
 
 
 def usbmux_has_device():
-    out = _run([PY, "-m", "pymobiledevice3", "--no-color", "usbmux", "list"], timeout=25)
+    out = _run([PY, "-m", "pymobiledevice3", "usbmux", "list"], timeout=25)
     if "__ERR__" in out:
         return None, out
     return (UDID in out), out
@@ -99,8 +99,8 @@ def ensure_forward():
                     kill_pid(token)
                     break
     subprocess.Popen(
-        [PY, "-m", "pymobiledevice3", "--no-color", "usbmux", "forward",
-         "8100", "8100", f"--udid={UDID}"],
+        [PY, "-m", "pymobiledevice3", "usbmux", "forward",
+         "8100", "8100", f"--serial={UDID}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     for _ in range(24):
@@ -111,7 +111,7 @@ def ensure_forward():
 
 
 def launch_runner():
-    _run([PY, "-m", "pymobiledevice3", "--no-color", "developer", "dvt",
+    _run([PY, "-m", "pymobiledevice3", "developer", "dvt",
           "launch", XCTRUNNER, "--udid", UDID], timeout=60)
 
 

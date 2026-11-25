@@ -8,11 +8,17 @@
 | `shot.py` | 截一张手机当前屏幕到 `data/shots/now.png`，用来量坐标 | 截图看当前画面 |
 | `mirror.py` | 电脑上镜像手机画面，点哪点哪，同时录成脚本；左侧有 ◀返回（点箭头）/ ←手势（边缘滑）/ ⌂主屏 / ✕关窗 | 动作录制（镜像点选） |
 | `fasttap.py` | 按脚本串执行点击 / 长按 / 滑动 / 键入，支持定时开火 | 连点流水线（也供大麦「单点连击」调用） |
+| `material.py` | 素材打标 / 素材库：导入录屏视频抽帧或连机录制抓帧，逐步选操作类型、图上点取坐标、填参数/文字/备注；按打标结果生成可运行的 `.py` 自动化代码和带帧图对照的 `.md` AI 素材文档 | 素材打标 / 素材库 |
 
 ```bash
 python tasks/通用/wda_up.py          # 连不上时加 --force
 python tasks/通用/shot.py
 python tasks/通用/mirror.py
+python tasks/通用/material.py
 ```
 
-`core/quick.py` 是这三个脚本共用的 WDA 底层，不单独对外当任务。
+素材存在 `data/materials/`：`<名字>.json` 是打标结果，`frames/<stem>/` 是抽出来的帧图，
+`<名字>.py` 是生成的可运行自动化代码，`<名字>.md` 是帧图对照 + 参数 + 代码片段的 AI 参考素材，
+`<名字>.mp4` 是连机录制生成的视频存档。
+
+`core/quick.py` 是这些脚本共用的 WDA 底层，不单独对外当任务。

@@ -8,7 +8,10 @@ Windows 上通过 WDA 直接控制 iPhone：界面点一下、脚本跑一遍，
 苹果手机自动化/
 ├── gui.py                    主文件 / 唯一入口
 ├── core/
-│   └── quick.py              共享底层：WDA 会话、点击、滑动、长按、键入、截图
+│   ├── quick.py              共享底层：WDA 会话、点击、滑动、长按、键入、截图
+│   ├── ocr.py                OCR 抽象层（后端可插拔，结果标准化）
+│   ├── issue_checker.py      异常分支纯判定（关键词 + 区域）
+│   └── guard.py              步后兜底编排：检测 → 处置 → 轮次上限
 ├── tasks/
 │   ├── 通用/
 │   │   ├── wda_up.py         检查手机连接（设备 / 转发 / runner 自愈）
@@ -16,7 +19,7 @@ Windows 上通过 WDA 直接控制 iPhone：界面点一下、脚本跑一遍，
 │   │   ├── mirror.py         动作录制（镜像点选）
 │   │   └── fasttap.py        连点流水线（单点连击也调它）
 │   ├── 快手宝箱/
-│   │   └── ks_bot.py         自动领取金币
+│   │   └── chest_flow.py     坐标回放 + OCR 兜底
 │   └── 大麦抢票/
 │       └── README.md         抢票流程说明（脚本复用 tasks/通用/fasttap.py）
 ├── data/                     运行产物：截图、日志、WDA session、录制的脚本
@@ -34,7 +37,7 @@ Windows 上通过 WDA 直接控制 iPhone：界面点一下、脚本跑一遍，
 | 通用 | 截图看当前画面 | `tasks\通用\shot.py` |
 | 通用 | 动作录制（镜像点选） | `tasks\通用\mirror.py` |
 | 通用 | 连点流水线 | `tasks\通用\fasttap.py --script` |
-| 快手宝箱 | 自动领取金币 | `tasks\快手宝箱\ks_bot.py` |
+| 快手宝箱 | 自动领取金币 | `tasks\快手宝箱\chest_flow.py` |
 | 大麦抢票 | 单点连击 | `tasks\通用\fasttap.py` |
 
 ## 脚本串格式

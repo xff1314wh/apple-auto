@@ -7,6 +7,7 @@ __pycache__/
 data/wda_sid.txt
 data/shots/
 data/logs/
+data/materials/
 
 # 安装包：本地保留备用，不上传仓库
 setup/installers/
@@ -14,3 +15,10 @@ setup/installers/
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db
+
+# 运行时注册表 / 临时录制串（本地生成，不上传）
+data/tasks.json
+data/record_script.txt
+
+# 录制导出的任务脚本（本地生成）
+tasks/录制任务/

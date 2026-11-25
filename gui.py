@@ -15,13 +15,16 @@ from tkinter import messagebox, scrolledtext, ttk
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
+sys.path.insert(0, os.path.join(ROOT, "core"))
+import task_registry  # noqa: E402
 
 TICKET = "tasks/通用/fasttap.py"
 DM = "tasks/大麦抢票/dm_ticket.py"
-KUAI = "tasks/快手宝箱/ks_bot.py"
+KUAI = "tasks/快手宝箱/chest_flow.py"
 SHOT = "tasks/通用/shot.py"
 WDAUP = "tasks/通用/wda_up.py"
 MIRROR = "tasks/通用/mirror.py"
+MATERIAL = "tasks/通用/material.py"
 
 RECORD_FILE = os.path.join(ROOT, "data", "record_script.txt")
 
@@ -56,6 +59,15 @@ OPERATIONS = [
     },
     {
         "group": "通用",
+        "name": "素材打标 / 素材库",
+        "desc": "导入录屏视频按帧率抽帧，逐步打标（点击/长按/滑动/返回/主屏/键入/等待），"
+                "坐标直接在画面上点取，每步可填参数、键入文字和备注；存成素材库，生成可运行的自动化代码和 AI 素材文档。",
+        "fields": [],
+        "cmd": lambda v: [PY, MATERIAL],
+        "hint": "素材存在 data\\materials\\：<名字>.py 是可直接运行的自动化代码，<名字>.md 是帧图对照的 AI 参考素材，frames/ 是抽出来的帧图。",
+    },
+    {
+        "group": "通用",
         "name": "连点流水线",
         "desc": "按顺序点多个位置，段与段之间按你设的毫秒数等待。回放、抢票都用它。",
         "fields": [
@@ -76,7 +88,7 @@ OPERATIONS = [
             {"key": "rounds", "label": "跑多少轮后停 (0=一直跑)", "default": "10", "width": 8},
         ],
         "cmd": lambda v: [PY, KUAI, v["rounds"]],
-        "hint": "需要快手停在视频/广告页。程序靠读无障碍文字判断状态，单次判断约 5 秒。",
+        "hint": "按素材坐标顺序回放，每步后 OCR 检测异常弹窗并自动处置；识别不到不打断主流程。",
     },
     {
         "group": "大麦抢票",
@@ -283,11 +295,13 @@ class App:
         self.current = 0
         self.row_of_op = {}
         self.op_of_row = {}
+        self.all_ops = []
 
         root.title("苹果手机自动化")
         root.geometry("1020x720")
         root.minsize(920, 640)
 
+        self._load_dynamic()
         self._build()
         self._select(0)
         self.root.after(80, self._drain)
@@ -305,7 +319,10 @@ class App:
 
         left = ttk.Frame(body)
         left.pack(side="left", fill="y")
-        ttk.Label(left, text="任务", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+        head = ttk.Frame(left)
+        head.pack(fill="x")
+        ttk.Label(head, text="任务", font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+        ttk.Button(head, text="刷新", width=6, command=self._reload).pack(side="right")
         self.listbox = tk.Listbox(left, width=24, height=12, activestyle="none",
                                   font=("Microsoft YaHei UI", 10), exportselection=False)
         self._fill_list()
@@ -336,9 +353,39 @@ class App:
                                              state="disabled", wrap="word")
         self.log.pack(fill="both", expand=True)
 
+    def _load_dynamic(self):
+        """合并内置任务与注册表登记的录制任务。"""
+        ops = []
+        for t in task_registry.load(ROOT):
+            script = t["script"]
+
+            def _cmd(v, s=script):
+                cmd = [PY, s]
+                if v.get("rounds"):
+                    cmd.append(v["rounds"])
+                return cmd
+
+            ops.append({
+                "group": t.get("group", "录制任务"),
+                "name": t.get("name", script),
+                "desc": t.get("hint", ""),
+                "fields": t.get("fields", []),
+                "hint": t.get("hint", ""),
+                "cmd": _cmd,
+            })
+        self.all_ops = list(OPERATIONS) + ops
+
+    def _reload(self):
+        self._load_dynamic()
+        self._fill_list()
+        self._select(0)
+
     def _fill_list(self):
+        self.listbox.delete(0, "end")
+        self.row_of_op = {}
+        self.op_of_row = {}
         last = None
-        for i, op in enumerate(OPERATIONS):
+        for i, op in enumerate(self.all_ops):
             if op["group"] != last:
                 self.listbox.insert("end", f"  {op['group']}")
                 row = self.listbox.size() - 1
@@ -351,7 +398,7 @@ class App:
 
     def _select(self, idx):
         self.current = idx
-        op = OPERATIONS[idx]
+        op = self.all_ops[idx]
         row = self.row_of_op.get(idx)
         self.listbox.selection_clear(0, "end")
         if row is not None:
@@ -409,14 +456,14 @@ class App:
         self._select(idx)
 
     def _values(self):
-        op = OPERATIONS[self.current]
+        op = self.all_ops[self.current]
         return {f["key"]: self.entries[f["key"]].get().strip() for f in op["fields"]}
 
     def _start(self):
         if self.runner.running():
             messagebox.showinfo("提示", "还有任务在跑，先停止。")
             return
-        op = OPERATIONS[self.current]
+        op = self.all_ops[self.current]
         vals = self._values()
         for f in op["fields"]:
             if not vals.get(f["key"]):

@@ -1,0 +1,9 @@
+# 运行时依赖（换机后：pip install -r requirements.txt）
+# wda_up.py 通过 `python -m pymobiledevice3` 调设备枚举/端口转发/拉起 runner，必须装在项目所用解释器里。
+# 4.x 与 py3.9 兼容；cryptography 钉 41.0.7（43 的 Rust 绑定在老机器上 DLL 加载失败）。
+Pillow>=9.3.0
+av>=12.3.0
+pymobiledevice3==4.27.7
+cryptography==41.0.7
+# OCR 异常兜底：rapidocr ONNX CPU 后端（1.3.9 兼容 py3.9；会自带 onnxruntime/opencv-python/Shapely/pyclipper）
+rapidocr-onnxruntime==1.3.9
