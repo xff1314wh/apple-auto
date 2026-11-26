@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -285,6 +286,42 @@ def is_locked():
 def wake():
     """唤醒屏幕（亮到密码页）。仅点亮，不能代替输入密码解锁。"""
     return _req("POST", f"/session/{session()}/wda/unlock", {}, timeout=8)
+
+
+# 密码盘数字键中心（逻辑坐标 414x896，iPhone 11 标定；换机型需重新标定）
+_PIN_KEYS = {
+    "1": (90, 375), "2": (207, 375), "3": (324, 375),
+    "4": (90, 482), "5": (207, 482), "6": (324, 482),
+    "7": (90, 590), "8": (207, 590), "9": (324, 590),
+    "0": (207, 697),
+}
+
+
+def unlock(pin, interval=0.35, settle=2.0):
+    """唤醒并输入密码解锁（库内工具，主流程不自动调用）。
+
+    :param pin: 数字锁屏密码字符串，由调用方传入；本模块不持久化、不写死密码。
+    :param interval: 按键间隔秒。
+    :param settle: 输完等待解锁完成的秒数。
+    :return: {"unlocked": bool, "already": bool, "locked_after": bool|None}
+    """
+    if is_locked() is False:
+        return {"unlocked": True, "already": True, "locked_after": False}
+
+    # wake 端点会阻塞等待解锁，丢到线程里跑，主线程继续等密码页出现
+    threading.Thread(target=wake, daemon=True).start()
+    time.sleep(1.3)
+
+    pin = str(pin)
+    for ch in pin:
+        if ch not in _PIN_KEYS:
+            return {"unlocked": False, "already": False, "error": f"非法密码位: {ch}"}
+        tap2(*_PIN_KEYS[ch])
+        time.sleep(interval)
+
+    time.sleep(settle)
+    locked = is_locked()
+    return {"unlocked": locked is False, "already": False, "locked_after": locked}
 
 
 if __name__ == "__main__":
