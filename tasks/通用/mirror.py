@@ -39,7 +39,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -49,6 +49,8 @@ import quick  # noqa: E402
 import ocr as ocr_mod  # noqa: E402
 import task_registry  # noqa: E402
 import flow_template  # noqa: E402
+import py_loader  # noqa: E402
+import apps  # noqa: E402
 
 DATA = os.path.join(ROOT, "data")
 RECORD_FILE = os.path.join(DATA, "record_script.txt")
@@ -78,6 +80,8 @@ class RecorderApp:
         self.events = []
         self.issues = []
         self.selected_issue = -1
+        self.source_py = None      # 当前正在编辑的已导出 py 路径；None = 全新录制
+        self.apps_cache = []       # 已装 App 列表缓存（bundle/name）
         self.mark_mode = False
         self.region_mode = False
         self.last_t = None
@@ -115,6 +119,7 @@ class RecorderApp:
         threading.Thread(target=self._decode_worker, daemon=True).start()
         threading.Thread(target=self._inject_loop, daemon=True).start()
         self.root.after(FRAME_MS, self._tick)
+        threading.Thread(target=lambda: self._load_apps(), daemon=True).start()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _build(self):
@@ -161,6 +166,7 @@ class RecorderApp:
         self.text_in.pack(side="left", fill="x", expand=True)
         self.text_in.bind("<Return>", lambda e: self._send_text())
         ttk.Button(row, text="输入", width=6, command=self._send_text).pack(side="left", padx=(4, 0))
+        ttk.Button(right, text="打开 App（加入动作流程）", command=self._open_app_dialog).pack(fill="x", pady=(4, 0))
 
         ttk.Label(right, text="返回箭头坐标（左上角那个 < ）",
                   font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", pady=(6, 2))
@@ -179,6 +185,7 @@ class RecorderApp:
 
         # ---- 任务导出：生成可运行 py，并登记到 gui 任务列表 ----
         ttk.Label(right, text="任务导出", font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w", pady=(0, 2))
+        ttk.Button(right, text="导入 py 继续编辑", command=self._import_py).pack(fill="x", pady=(0, 2))
         row_n = ttk.Frame(right); row_n.pack(fill="x")
         ttk.Label(row_n, text="任务名", width=8).pack(side="left")
         self.task_name = ttk.Entry(row_n, width=14)
@@ -521,6 +528,55 @@ class RecorderApp:
         self._record("text", s)
         self.text_in.delete(0, "end")
 
+    def _load_apps(self, refresh=False):
+        apps_list, err = apps.list_installed_apps(refresh=refresh)
+        if err:
+            self._log(f"扫描 App 失败：{err[:80]}")
+        self.apps_cache = [a for a in apps_list
+                           if "WebDriverAgentRunner" not in a["bundle"]]
+        return self.apps_cache
+
+    def _open_app_dialog(self):
+        if not self.apps_cache:
+            self._load_apps()
+        win = tk.Toplevel(self.root)
+        win.title("打开 App")
+        win.geometry("380x230")
+        ttk.Label(win, text="选择要打开的 App：").pack(anchor="w", padx=12, pady=(12, 4))
+        box = ttk.Combobox(win, width=36, state="readonly")
+        names = [f"{a['name']}  {a['bundle']}" for a in self.apps_cache]
+        box["values"] = names
+        if names:
+            box.current(0)
+        box.pack(padx=12, fill="x")
+
+        clean_var = tk.BooleanVar(value=False)
+        ttk.Radiobutton(win, text="直接打开（在后台就拉到前台）",
+                        variable=clean_var, value=False).pack(anchor="w", padx=12, pady=(12, 2))
+        ttk.Radiobutton(win, text="清理后台后冷启动（先杀进程再拉起，需 tunneld 隧道在运行）",
+                        variable=clean_var, value=True).pack(anchor="w", padx=12)
+
+        bar = ttk.Frame(win)
+        bar.pack(pady=14)
+        ttk.Button(bar, text="刷新列表",
+                   command=lambda: self._refresh_apps_box(box)).pack(side="left", padx=4)
+        ttk.Button(bar, text="加入动作流程",
+                   command=lambda: self._confirm_open_app(box, clean_var, win)).pack(side="left", padx=4)
+
+    def _refresh_apps_box(self, box):
+        self._load_apps(refresh=True)
+        box["values"] = [f"{a['name']}  {a['bundle']}" for a in self.apps_cache]
+        self._log("App 列表已刷新")
+
+    def _confirm_open_app(self, box, clean_var, win):
+        idx = box.current()
+        if idx < 0:
+            return
+        app = self.apps_cache[idx]
+        self._record("openapp", app["bundle"], app["name"], clean_var.get(),
+                     force_inject=True)
+        win.destroy()
+
     def _refresh_events(self):
         self.lb.delete(0, "end")
         for i, (kind, args, gap) in enumerate(self.events):
@@ -539,14 +595,14 @@ class RecorderApp:
         self._refresh_events()
         self._log(f"已删除动作 {idx + 1}")
 
-    def _record(self, kind, *args):
+    def _record(self, kind, *args, force_inject=False):
         now = time.time()
         gap = int((now - self.last_t) * 1000) if self.last_t else 0
         self.last_t = now
         self.events.append((kind, args, gap))
         self._refresh_events()
 
-        if self.inject_on.get():
+        if self.inject_on.get() or force_inject:
             try:
                 self.inject_q.put_nowait((kind, args))
             except queue.Full:
@@ -566,6 +622,10 @@ class RecorderApp:
             return f"返回（点 {a[0]},{a[1]}）"
         if kind == "backswipe":
             return "返回（边缘手势）"
+        if kind == "openapp":
+            name = a[1] or a[0]
+            mode = "冷启动" if a[2] else "直接打开"
+            return f"打开 {name}（{mode}）"
         return f'键入 "{a[0]}"'
 
     # ---------- 注入 ----------
@@ -601,6 +661,17 @@ class RecorderApp:
                     r = quick.go_back()
                     ok = not (isinstance(r, dict) and r.get("error"))
                     err = str(r)[:80] if not ok else ""
+                elif kind == "openapp":
+                    r = quick.open_app(args[0], clean=args[2])
+                    ok = not (isinstance(r, dict) and r.get("error"))
+                    err = str(r)[:80] if not ok else ""
+                    if isinstance(r, dict) and r.get("kill_fallback"):
+                        err = "杀进程失败，退化为直接打开（隧道可能未启动）"
+                    # 拉起 App 会重建 session，刷新本地 sid 供后续动作/抓帧使用
+                    try:
+                        self.sid = quick.session()
+                    except Exception:
+                        pass
             except Exception as e:
                 ok, err = False, f"{type(e).__name__}: {e}"
             finally:
@@ -842,10 +913,54 @@ class RecorderApp:
                 st.update({"type": "backswipe"})
             elif kind == "text":
                 st.update({"type": "text", "text": a[0]})
+            elif kind == "openapp":
+                st.update({"type": "openapp", "bundle": a[0], "name": a[1],
+                           "clean": a[2], "note": a[1]})
             else:
                 continue
             steps.append(st)
         return steps
+
+    # ---------- 导入已有 py 继续编辑 ----------
+    def _import_py(self):
+        path = filedialog.askopenfilename(
+            title="选择要继续编辑的任务脚本",
+            initialdir=TASK_DIR,
+            filetypes=[("Python 脚本", "*.py"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            with io.open(path, encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            messagebox.showerror("读取失败", f"打不开这份脚本：{e}")
+            return
+        data = py_loader.parse_py_source(text)
+        if not data["events"] and not data["issues"]:
+            messagebox.showinfo("未解析到内容", "这份脚本里没解析出主流程动作或异常分支。")
+            return
+        self._load_into_ui(data, path)
+
+    def _load_into_ui(self, data, source_py):
+        self._clear()                       # 复位画布 / 表单 / 列表
+        self.source_py = source_py
+        self.events = list(data["events"])
+        self.issues = [dict(i) for i in data["issues"]]
+        self.selected_issue = 0 if self.issues else -1
+        if data["name"]:
+            self._set_entry(self.task_name, data["name"])
+        self._set_entry(self.task_rounds, str(data["rounds"]))
+        self._refresh_events()
+        self._refresh_issues()
+        if self.selected_issue >= 0:
+            iss = self.issues[self.selected_issue]
+            self._set_entry(self.iss_keywords, "，".join(iss.get("keywords", [])))
+            self._set_entry(self.iss_rounds, str(iss.get("max_rounds", 3)))
+            self._fill_action_controls(iss)
+            self._refresh_region_label()
+            self._draw_region()
+            self._refresh_points()
+        self._log(f"已导入 {len(self.events)} 个动作、{len(self.issues)} 个异常分支，可继续增改后覆盖保存")
 
     def _generate_task(self):
         self._sync_form_to_issue()
@@ -861,12 +976,19 @@ class RecorderApp:
         clean_issues = [i for i in self.issues if i.get("keywords") or i.get("points")]
         py = flow_template.render_py(name, steps, clean_issues or None,
                                      default_rounds=rounds, description="")
-        safe = re.sub(r'[\\/:*?"<>|\s]+', "_", name).strip("_") or "task"
-        os.makedirs(TASK_DIR, exist_ok=True)
-        py_path = os.path.join(TASK_DIR, safe + ".py")
+        if self.source_py and os.path.exists(self.source_py):
+            # 导入继续编辑：覆盖写回原脚本，注册表沿用原路径
+            py_path = self.source_py
+            rel = os.path.relpath(py_path, ROOT).replace(os.sep, "/")
+            overwritten = True
+        else:
+            safe = re.sub(r'[\\/:*?"<>|\s]+', "_", name).strip("_") or "task"
+            os.makedirs(TASK_DIR, exist_ok=True)
+            py_path = os.path.join(TASK_DIR, safe + ".py")
+            rel = os.path.relpath(py_path, ROOT).replace(os.sep, "/")
+            overwritten = False
         with open(py_path, "w", encoding="utf-8") as f:
             f.write(py)
-        rel = os.path.relpath(py_path, ROOT).replace(os.sep, "/")
         task = {
             "name": name,
             "group": TASK_GROUP,
@@ -877,8 +999,9 @@ class RecorderApp:
             "source": "record",
         }
         task_registry.upsert(ROOT, task)
-        self._log(f"任务脚本已生成：{rel}")
-        messagebox.showinfo("已生成", f"脚本：{rel}\n已登记到 gui，刷新任务即可看到。")
+        action = "已覆盖" if overwritten else "已生成"
+        self._log(f"任务脚本{action}：{rel}")
+        messagebox.showinfo(action, f"脚本：{rel}\n已登记到 gui，刷新任务即可看到。")
 
     def _make_script(self):
         if not self.events:
@@ -901,6 +1024,8 @@ class RecorderApp:
                 parts.append(f"back:{a[0]},{a[1]}")
             elif kind == "backswipe":
                 parts.append("backswipe:")
+            elif kind == "openapp":
+                pass  # 打开 App 不进老 fasttap 脚本串，仅保留在 py 产物里
             else:
                 txt = a[0]
                 if ";" in txt or "\n" in txt:
@@ -920,6 +1045,7 @@ class RecorderApp:
         self.events = []
         self.issues = []
         self.selected_issue = -1
+        self.source_py = None
         self.last_t = None
         self.mode_var.set("record")
         self._sync_modes()

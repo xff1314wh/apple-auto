@@ -2,12 +2,14 @@
 import base64
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 
 BASE = "http://127.0.0.1:8100"
+UDID = "00008030-001E44DE02D0802E"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data")
 SID_FILE = os.path.join(DATA, "wda_sid.txt")
@@ -214,6 +216,75 @@ def findclick(using, value):
     if e.get("error"):
         return e
     return click(e["eid"])
+
+
+def _dvt(*args, timeout=30):
+    """经 pymobiledevice3 DVT 设备层下发命令（依赖本地 tunneld 常驻）。
+
+    返回 {ok, out, err}；隧道不通或设备锁屏时 ok=False。
+    """
+    cmd = [sys.executable, "-m", "pymobiledevice3", "developer", "dvt",
+           *args, "--udid", UDID]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           encoding="utf-8", errors="replace")
+        return {"ok": p.returncode == 0,
+                "out": (p.stdout or "").strip(),
+                "err": (p.stderr or "").strip()[-160:]}
+    except Exception as e:
+        return {"ok": False, "err": f"{type(e).__name__}: {e}"}
+
+
+def activate_app(bundle):
+    """拉起/激活 App。
+
+    WDA 未注册 App 启停 HTTP 路由（appium / wda 端点全 404），
+    可用通道是：用 bundleId 新建一个 WDA session，由 WDA 附着并拉起该 App。
+    """
+    r = start(bundle)
+    return r if r.get("session") else {"error": r}
+
+
+def terminate_app(bundle):
+    """杀后台进程（DVT pkill，按 bundleId 匹配，需 tunneld 在跑）。
+
+    成功返回 {ok: True}；隧道不通时返回 {ok: False, error}，调用方据此降级。
+    """
+    r = _dvt("pkill", bundle, "--bundle")
+    if r["ok"]:
+        return {"ok": True}
+    return {"ok": False, "error": (r.get("err") or "pkill 失败") + "（需管理员 tunneld 隧道在运行）"}
+
+
+def open_app(bundle, clean=False):
+    """打开 App。
+
+    clean=True：先 DVT pkill 清掉后台进程，再由 WDA session 重新附着拉起，
+    实现冷启动；杀进程失败不阻断，降级为直接激活。
+    clean=False：直接激活（后台拉前台，不在则启动）。
+    """
+    killed = None
+    if clean:
+        killed = terminate_app(bundle)
+        if killed.get("ok"):
+            time.sleep(0.6)
+    r = activate_app(bundle)
+    if killed and not killed.get("ok"):
+        r["kill_fallback"] = killed
+    return r
+
+
+def is_locked():
+    """设备是否处于锁屏状态。查不到时返回 None。"""
+    sid = session()
+    r = _req("GET", f"/session/{sid}/wda/locked")
+    v = r.get("value")
+    return v if isinstance(v, bool) else None
+
+
+def wake():
+    """唤醒屏幕（亮到密码页）。仅点亮，不能代替输入密码解锁。"""
+    return _req("POST", f"/session/{session()}/wda/unlock", {}, timeout=8)
 
 
 if __name__ == "__main__":

@@ -20,10 +20,12 @@ import json
 TYPE_LABEL = {
     "tap": "点击", "hold": "长按", "swipe": "滑动", "home": "主屏",
     "back": "返回", "backswipe": "手势返回", "text": "键入", "wait": "等待",
+    "openapp": "打开App",
 }
 
 # 动作后是否接一次 OCR 兜底检测；等待步不检测
-_GUARD_AFTER = {"tap", "hold", "swipe", "home", "back", "backswipe", "text"}
+_GUARD_AFTER = {"tap", "hold", "swipe", "home", "back", "backswipe", "text",
+                "openapp"}
 
 
 def _py_literal(v):
@@ -77,6 +79,10 @@ def _step_lines(st, i):
         code.append("quick.go_back()")
     elif t == "text":
         code.append(f"quick.keys({_py_literal(st.get('text', ''))})")
+    elif t == "openapp":
+        clean = bool(st.get("clean", False))
+        code.append(f"quick.open_app({_py_literal(st.get('bundle', ''))}, "
+                    f"clean={clean})")
     elif t == "wait":
         code.append(f"time.sleep({int(st.get('ms', 1000)) / 1000:.3f})")
 

@@ -19,6 +19,7 @@ Thumbs.db
 # 运行时注册表 / 临时录制串（本地生成，不上传）
 data/tasks.json
 data/record_script.txt
+data/source_*.xml
 
 # 录制导出的任务脚本（本地生成）
 tasks/录制任务/
