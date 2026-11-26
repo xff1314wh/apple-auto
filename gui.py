@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, simpledialog, ttk
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
@@ -24,6 +24,7 @@ KUAI = "tasks/快手宝箱/chest_flow.py"
 SHOT = "tasks/通用/shot.py"
 WDAUP = "tasks/通用/wda_up.py"
 CLEAR_BG = "tasks/通用/clear_bg.py"
+UNLOCK_PHONE = "tasks/通用/unlock_phone.py"
 MIRROR = "tasks/通用/mirror.py"
 MATERIAL = "tasks/通用/material.py"
 
@@ -315,6 +316,7 @@ class App:
         self.status.pack(side="right", padx=(0, 10))
         ttk.Button(top, text="检查连接", command=self._check).pack(side="right", padx=6)
         ttk.Button(top, text="清空后台", command=self._clear_bg).pack(side="right", padx=6)
+        ttk.Button(top, text="解锁手机", command=self._unlock_phone).pack(side="right", padx=6)
 
         body = ttk.Frame(self.root, padding=(14, 4, 14, 4))
         body.pack(fill="both", expand=True)
@@ -509,6 +511,25 @@ class App:
             self.btn_start.configure(state="disabled")
             self.btn_stop.configure(state="normal")
             self.status.configure(text="清理中", foreground="#888")
+
+    def _unlock_phone(self):
+        if self.runner.running():
+            messagebox.showinfo("提示", "任务运行中，先停止。")
+            return
+        pin = simpledialog.askstring("解锁手机", "输入锁屏密码：", show="*", parent=self.root)
+        if pin is None:
+            return
+        pin = pin.strip()
+        if not pin:
+            messagebox.showwarning("提示", "密码为空")
+            return
+        os.environ["UNLOCK_PIN"] = pin
+        self._log("\n>>> 通用 / 解锁手机")
+        if self.runner.start([PY, UNLOCK_PHONE]):
+            self.btn_start.configure(state="disabled")
+            self.btn_stop.configure(state="normal")
+            self.status.configure(text="解锁中", foreground="#888")
+        os.environ.pop("UNLOCK_PIN", None)
 
     def _clear(self):
         self.log.configure(state="normal")

@@ -378,7 +378,13 @@ def unlock(pin, interval=0.35, settle=2.0):
         time.sleep(interval)
 
     time.sleep(settle)
+    # 解锁后 WDA 状态同步有延迟，轮询最多再等 6s，变 False 即成功
     locked = is_locked()
+    for _ in range(6):
+        if locked is False:
+            break
+        time.sleep(1)
+        locked = is_locked()
     return {"unlocked": locked is False, "already": False, "locked_after": locked}
 
 
