@@ -23,6 +23,7 @@ DM = "tasks/大麦抢票/dm_ticket.py"
 KUAI = "tasks/快手宝箱/chest_flow.py"
 SHOT = "tasks/通用/shot.py"
 WDAUP = "tasks/通用/wda_up.py"
+CLEAR_BG = "tasks/通用/clear_bg.py"
 MIRROR = "tasks/通用/mirror.py"
 MATERIAL = "tasks/通用/material.py"
 
@@ -313,6 +314,7 @@ class App:
         self.status = ttk.Label(top, text="设备：未检查", foreground="#888")
         self.status.pack(side="right", padx=(0, 10))
         ttk.Button(top, text="检查连接", command=self._check).pack(side="right", padx=6)
+        ttk.Button(top, text="清空后台", command=self._clear_bg).pack(side="right", padx=6)
 
         body = ttk.Frame(self.root, padding=(14, 4, 14, 4))
         body.pack(fill="both", expand=True)
@@ -497,6 +499,16 @@ class App:
             self.btn_start.configure(state="disabled")
             self.btn_stop.configure(state="normal")
             self.status.configure(text="检查中", foreground="#888")
+
+    def _clear_bg(self):
+        if self.runner.running():
+            messagebox.showinfo("提示", "任务运行中，先停止再清理。")
+            return
+        self._log("\n>>> 通用 / 清空后台（保留 WDA）")
+        if self.runner.start([PY, CLEAR_BG]):
+            self.btn_start.configure(state="disabled")
+            self.btn_stop.configure(state="normal")
+            self.status.configure(text="清理中", foreground="#888")
 
     def _clear(self):
         self.log.configure(state="normal")

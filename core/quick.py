@@ -257,6 +257,64 @@ def terminate_app(bundle):
     return {"ok": False, "error": (r.get("err") or "pkill 失败") + "（需管理员 tunneld 隧道在运行）"}
 
 
+WDA_BUNDLE = "com.facebook.WebDriverAgentRunner"
+
+
+def _proclist():
+    r = _dvt("proclist", timeout=30)
+    if not r["ok"]:
+        return None, (r.get("err") or "proclist 失败") + "（需管理员 tunneld 隧道在运行）"
+    try:
+        return json.loads(r["out"]), None
+    except Exception as e:
+        return None, f"解析进程列表失败：{e}"
+
+
+def clear_background(exclude=None):
+    """清空后台用户 App，保留 WDA 与系统进程。
+
+    只杀 bundleId 属于已装用户 App 列表的运行中进程；WDA runner 显式排除。
+    :param exclude: 额外排除的 bundle 列表。
+    :return: {ok, killed:[{name,bundle,pid}], skipped:[...], errors:[...]}
+    """
+    exclude = set(exclude or [])
+    exclude.add(WDA_BUNDLE)
+
+    procs, err = _proclist()
+    if procs is None:
+        return {"ok": False, "error": err, "killed": [], "skipped": [], "errors": [err]}
+
+    try:
+        from apps import list_installed_apps
+        user_apps, e2 = list_installed_apps()
+    except Exception as e:
+        return {"ok": False, "error": f"列举用户 App 失败：{e}", "killed": [], "skipped": [], "errors": [str(e)]}
+    if e2:
+        return {"ok": False, "error": f"列举用户 App 失败：{e2}", "killed": [], "skipped": [], "errors": [e2]}
+    user_bundles = {a["bundle"] for a in user_apps}
+
+    killed, skipped, errors = [], [], []
+    for proc in procs:
+        bundle = proc.get("bundleIdentifier") or ""
+        if not bundle:
+            continue
+        if bundle in exclude or "WebDriverAgent" in bundle:
+            skipped.append({"name": proc.get("name"), "bundle": bundle, "pid": proc.get("pid")})
+            continue
+        if bundle not in user_bundles:
+            continue  # 系统/自带 App 不动
+        pid = proc.get("pid")
+        if not pid:
+            continue
+        r = _dvt("kill", str(pid), timeout=15)
+        if r["ok"]:
+            killed.append({"name": proc.get("name"), "bundle": bundle, "pid": pid})
+        else:
+            errors.append(f"{bundle}(pid {pid}): {r.get('err')}")
+
+    return {"ok": not errors, "killed": killed, "skipped": skipped, "errors": errors}
+
+
 def open_app(bundle, clean=False):
     """打开 App。
 
