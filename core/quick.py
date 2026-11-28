@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -10,6 +11,7 @@ import urllib.error
 import urllib.request
 
 BASE = "http://127.0.0.1:8100"
+MJPEG_PORT = 9100          # WDA 内置 MJPEG 屏幕流端口（设备端持续推 JPEG）
 UDID = "00008030-001E44DE02D0802E"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data")
@@ -59,6 +61,13 @@ def session():
     return open(SID_FILE, encoding="utf-8-sig").read().strip()
 
 
+def active_bundle():
+    """当前前台 App 的 bundleId；取不到返回空串（不要误判为第三方）。"""
+    r = _req("GET", f"/session/{session()}/wda/activeAppInfo", None, timeout=10)
+    v = r.get("value") or {}
+    return v.get("bundleId") or ""
+
+
 def start(bundle=""):
     payload = {"capabilities": {"alwaysMatch": ({"bundleId": bundle} if bundle else {})}}
     r = _req("POST", "/session", payload)
@@ -97,6 +106,40 @@ def ensure_session():
     if nr.get("session"):
         return {"session": nr["session"], "reconnected": True, "error": None}
     return {"session": sid, "reconnected": False, "error": nr}
+
+
+def _port_open(host, port):
+    """探测本机端口是否可连通（不发应用层请求）。"""
+    s = socket.socket()
+    s.settimeout(1.0)
+    try:
+        s.connect((host, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        s.close()
+
+
+def ensure_mjpeg_forward(timeout=5.0):
+    """确保设备 MJPEG 流端口 9100 已 usbmux 转发到本机。
+
+    WDA 在设备端 9100 持续推 MJPEG 帧；真机需要像 8100 一样做端口转发，
+    本机才能连到流。端口已在监听则直接返回 True；否则补一条常驻 forward 并等待就绪。
+    """
+    if _port_open("127.0.0.1", MJPEG_PORT):
+        return True
+    subprocess.Popen(
+        [sys.executable, "-m", "pymobiledevice3", "usbmux", "forward",
+         str(MJPEG_PORT), str(MJPEG_PORT), f"--serial={UDID}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    end = time.time() + timeout
+    while time.time() < end:
+        if _port_open("127.0.0.1", MJPEG_PORT):
+            return True
+        time.sleep(0.3)
+    return False
 
 
 def go_back(y=448):
@@ -186,12 +229,15 @@ def long_press(x, y, hold_ms=1200):
 
 
 def swipe2(x1, y1, x2, y2, dur_ms=300):
-    """从 (x1,y1) 滑到 (x2,y2)，全程 dur_ms 毫秒。"""
+    """从 (x1,y1) 滑到 (x2,y2)，全程 dur_ms 毫秒；带中间轨迹点，便于 WebView 识别为拖拽滚动。"""
+    mx = (x1 + x2) / 2
+    my = (y1 + y2) / 2
     acts = [{"type": "pointer", "id": "finger1",
              "parameters": {"pointerType": "touch"},
              "actions": [{"type": "pointerMove", "duration": 0, "x": int(x1), "y": int(y1)},
                          {"type": "pointerDown", "button": 0},
-                         {"type": "pointerMove", "duration": int(dur_ms), "x": int(x2), "y": int(y2)},
+                         {"type": "pointerMove", "duration": int(dur_ms / 2), "x": int(mx), "y": int(my)},
+                         {"type": "pointerMove", "duration": int(dur_ms / 2), "x": int(x2), "y": int(y2)},
                          {"type": "pointerUp", "button": 0}]}]
     return _actions(acts)
 
@@ -212,6 +258,46 @@ def click(eid):
     return _req("POST", f"/session/{session()}/element/{eid}/click", {"id": eid}, timeout=20)
 
 
+def find_by_xpath(xpath):
+    """按 xpath 找元素，返回 element id；找不到返回 None。"""
+    r = _req("POST", f"/session/{session()}/element",
+             {"using": "xpath", "value": xpath}, timeout=20)
+    v = r.get("value") or {}
+    for k in ("ELEMENT", "element-6066-11e4-a52e-4f735466cecf", "elementId"):
+        if isinstance(v, dict) and v.get(k) and v[k]:
+            return v[k]
+    return None
+
+
+def find_elements(xpath):
+    """按 xpath 批量查询元素，返回 element id 列表；找不到返回空列表。
+
+    标准 /elements 端点可返回同类型全部元素，用于按页面顺序和输入框节点一一配对。
+    """
+    r = _req("POST", f"/session/{session()}/elements",
+             {"using": "xpath", "value": xpath}, timeout=20)
+    v = r.get("value") or []
+    out = []
+    if isinstance(v, list):
+        for el in v:
+            if isinstance(el, dict):
+                eid = (el.get("ELEMENT")
+                       or el.get("element-6066-11e4-a52e-4f735466cecf")
+                       or el.get("elementId"))
+                if eid:
+                    out.append(eid)
+    return out
+
+
+def set_value(eid, text):
+    """覆盖式写入元素文本（WDA /element/{id}/value）。
+
+    对快手自管输入框是直接覆盖，不像 keys() 那样逐字追加，可避免旧词残留拼接。
+    """
+    return _req("POST", f"/session/{session()}/element/{eid}/value",
+                {"value": [text]}, timeout=15)
+
+
 def findclick(using, value):
     e = find_el(using, value)
     if e.get("error"):
@@ -229,9 +315,15 @@ def _dvt(*args, timeout=30):
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                            encoding="utf-8", errors="replace")
-        return {"ok": p.returncode == 0,
+        err = (p.stderr or "").strip()
+        ok = p.returncode == 0
+        # pymobiledevice3 连不上 tunneld 时仍返回 0、stdout 为空，必须按 stderr 判失败，
+        # 否则上层会把空输出当成功再去 json.loads 炸掉。
+        if ok and ("Unable to connect to Tunneld" in err or "InvalidServiceError" in err):
+            ok = False
+        return {"ok": ok,
                 "out": (p.stdout or "").strip(),
-                "err": (p.stderr or "").strip()[-160:]}
+                "err": err[-200:]}
     except Exception as e:
         return {"ok": False, "err": f"{type(e).__name__}: {e}"}
 
@@ -264,10 +356,36 @@ def _proclist():
     r = _dvt("proclist", timeout=30)
     if not r["ok"]:
         return None, (r.get("err") or "proclist 失败") + "（需管理员 tunneld 隧道在运行）"
+    if not r["out"]:
+        return None, "proclist 无输出（tunneld 隧道未运行）"
     try:
         return json.loads(r["out"]), None
     except Exception as e:
         return None, f"解析进程列表失败：{e}"
+
+
+def _wda_terminate(bundle, timeout=20):
+    """用 WDA 结束一个 App，返回 (是否已终止, 说明)。
+
+    App 正在运行时 WDA 把它杀掉，HTTP 连接常被一起带断；
+    这种断连按「已终止」算，并重建 session 供后续调用。
+    """
+    r = _req("POST", "/session/%s/wda/apps/terminate" % session(),
+             {"bundleId": bundle}, timeout=timeout)
+    if "error" in r:
+        note = str(r.get("error"))
+        low = note.lower()
+        need_new = ("close" in low or "reset" in low or "abort" in low
+                    or "connection" in low or "remotedisconnect" in low)
+        if need_new:
+            ensure_session()
+            time.sleep(0.3)
+            return True, "杀掉后连接断开"
+        return False, note
+    v = r.get("value")
+    if isinstance(v, dict):
+        v = v.get("value")
+    return bool(v), ("已终止" if v else "未在运行")
 
 
 def clear_background(exclude=None):
@@ -280,9 +398,8 @@ def clear_background(exclude=None):
     exclude = set(exclude or [])
     exclude.add(WDA_BUNDLE)
 
-    procs, err = _proclist()
-    if procs is None:
-        return {"ok": False, "error": err, "killed": [], "skipped": [], "errors": [err]}
+    procs, err = _proclist()      # 需要管理员 tunneld；拿不到就走下面的 WDA 兜底
+    need_wda = procs is None
 
     try:
         from apps import list_installed_apps
@@ -292,6 +409,24 @@ def clear_background(exclude=None):
     if e2:
         return {"ok": False, "error": f"列举用户 App 失败：{e2}", "killed": [], "skipped": [], "errors": [e2]}
     user_bundles = {a["bundle"] for a in user_apps}
+
+    if need_wda:
+        # 隧道没起（要管理员）时：先用 WDA 把前台 App 结束掉，再逐个清其余已装 App。
+        # 没在运行的 App 会立刻返回 false，连接不断，只有真正在跑的会断一次连接。
+        killed, errors = [], []
+        active = active_bundle()
+        order = ([active] if active in user_bundles else []) + \
+                [b for b in sorted(user_bundles) if b != active]
+        for b in order:
+            if b in exclude or "WebDriverAgent" in b:
+                continue
+            ok, note = _wda_terminate(b)
+            if ok:
+                killed.append({"name": "", "bundle": b, "pid": None})
+            elif note and note != "未在运行":
+                errors.append(f"{b}: {note}")
+        return {"ok": True, "killed": killed, "skipped": [], "errors": errors,
+                "via": "wda", "note": err}
 
     killed, skipped, errors = [], [], []
     for proc in procs:

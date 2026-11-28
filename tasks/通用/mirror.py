@@ -11,17 +11,15 @@
   右侧输入框点「输入」    → 键入文字（手机焦点要已在输入框里）
 
 画面管线（三段并行）：
-  抓帧线程 ≫ 1 个解码缩放线程 ≫ 主线程按固定节拍贴图
+  MJPEG 长连接读流线程 ≫ 1 个解码缩放线程 ≫ 主线程按固定节拍贴图
 
-抖动是怎么防的（关键）：
-  多线程并发请求时，返回顺序是乱的 —— 后发的可能先回，先发的后回，
-  直接把"最后到达的"当成最新帧就会出现画面退回去再前进，看着在抖。
-  所以每个请求发出前打一个时间戳，只接受时间戳比上一次更大的帧，
-  乱序到达的旧帧直接丢弃。显示节拍固定在 30 帧/秒，节奏均匀。
+画面来源：
+  WDA 在设备端 9100 端口持续推 MJPEG JPEG 帧；读流线程连长连接收帧，
+  只留最新一帧写单槽。不再逐张轮询 screenshot，读流不抢动作下发通道；
+  流是单路顺序帧，配合时间戳单调过滤，旧帧不回退。
 
 其他：
-  · 抓帧只认真正的 PNG（校验文件头），坏响应丢掉
-  · 提取 base64 用字节切片，不跑 json 解析
+  · 抓帧只认真正的 JPEG（校验文件头 FF D8），坏帧丢掉
   · 缩放先 reduce(2) 再 BILINEAR，字清楚且快
   · 贴图复用同一个 canvas item 和 PhotoImage，每帧重新压层级（画面沉底、标记在上）
   · 每次新动作先清旧标记，画面不糊成一团
@@ -62,16 +60,50 @@ VIEW_W = 356
 VIEW_H = round(VIEW_W * PHONE_H / PHONE_W)   # 770
 DRAG_PX = 8
 LONG_MS = 700
-GRAB_THREADS = 8          # 并发数：太少慢，太多乱序多、手机端压力大
 FRAME_MS = 20             # 显示节拍固定 50 帧/秒上限，节奏均匀
 
-RE_DATA = re.compile(rb'"data"\s*:\s*"([^"]+)"')
-RE_VALUE = re.compile(rb'"value"\s*:\s*"([^"]+)"')
+# MJPEG 屏幕流（WDA 内置 broadcaster，设备端持续推 JPEG 帧）
+MJPEG_HOST = "127.0.0.1"
+MJPEG_PORT = quick.MJPEG_PORT
+MJPEG_BOUNDARY = b"--BoundaryString"
+
+# MJPEG 帧头里的帧长度（Content-Length）
+RE_JPEG_LEN = re.compile(r"Content-Length:\s*(\d+)", re.I)
 
 
-def extract_b64(body):
-    m = RE_DATA.search(body) or RE_VALUE.search(body)
-    return m.group(1) if m else None
+def _parse_boundary(content_type):
+    """从 multipart 响应头解析 boundary；解析失败返回 None，用默认值。"""
+    if not content_type:
+        return None
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.lower().startswith("boundary="):
+            return part.split("=", 1)[1].strip().encode("latin1")
+    return None
+
+
+def _pop_jpeg_frame(buf, boundary):
+    """从 MJPEG 缓冲切出一帧 JPEG。
+
+    :return: (jpeg_bytes, 剩余缓冲)；帧不完整或头还没到齐时返回 (None, buf)。
+    """
+    bi = buf.find(boundary)
+    if bi < 0:
+        return None, buf
+    head_end = buf.find(b"\r\n\r\n", bi)
+    if head_end < 0:
+        return None, buf
+    head = buf[bi:head_end].decode("latin1", "ignore")
+    m = RE_JPEG_LEN.search(head)
+    if not m:
+        # 边界行残留、拿不到长度，跳过该 boundary 继续等下一帧
+        return None, buf[bi + len(boundary):]
+    n = int(m.group(1))
+    jpeg_start = head_end + 4
+    jpeg_end = jpeg_start + n
+    if len(buf) < jpeg_end:
+        return None, buf
+    return buf[jpeg_start:jpeg_end], buf[jpeg_end:]
 
 
 class RecorderApp:
@@ -114,8 +146,7 @@ class RecorderApp:
 
         self._build()
 
-        for _ in range(GRAB_THREADS):
-            threading.Thread(target=self._grab_worker, daemon=True).start()
+        threading.Thread(target=self._mjpeg_worker, daemon=True).start()
         threading.Thread(target=self._decode_worker, daemon=True).start()
         threading.Thread(target=self._inject_loop, daemon=True).start()
         self.root.after(FRAME_MS, self._tick)
@@ -272,44 +303,51 @@ class RecorderApp:
         self.text.pack(fill="x")
 
     # ---------- 第一段：抓帧（时间戳单调过滤） ----------
-    def _grab_worker(self):
+    def _mjpeg_worker(self):
+        """MJPEG 长连接读流：设备端按固定帧率推 JPEG，本线程只取最新帧写单槽。
+
+        相比旧的多线程逐张 screenshot 轮询：长连接只建一次，没有逐张 HTTP 往返，
+        读流也不抢 WDA 的动作下发通道。断线后自动补转发并重连。
+        """
         conn = None
+        resp = None
+        buf = b""
+        boundary = MJPEG_BOUNDARY
         while not self.stop_flag:
-            if self.act_busy.is_set():      # 正在往手机注入动作，先别抢 WDA
-                time.sleep(0.02)
-                continue
             try:
                 if conn is None:
-                    conn = http.client.HTTPConnection("127.0.0.1", 8100, timeout=10)
-                t_req = time.time()          # 这一帧的拍摄时刻
-                conn.request("GET", f"/session/{self.sid}/screenshot")
-                r = conn.getresponse()
-                body = r.read()
-                r.close()
-                if b"invalid session id" in body or b"Session does not exist" in body:
-                    self._reconnect()
-                    time.sleep(0.1)
+                    if not quick.ensure_mjpeg_forward():
+                        time.sleep(0.5)
+                        continue
+                    conn = http.client.HTTPConnection(MJPEG_HOST, MJPEG_PORT, timeout=10)
+                    conn.request("GET", "/")
+                    resp = conn.getresponse()
+                    if resp.status != 200:
+                        resp.read()
+                        conn.close()
+                        conn = None
+                        time.sleep(0.5)
+                        continue
+                    boundary = _parse_boundary(resp.headers.get("Content-Type", "")) or MJPEG_BOUNDARY
+                    buf = b""
+
+                chunk = resp.read(65536)
+                if not chunk:
+                    raise EOFError("MJPEG stream closed")
+                buf += chunk
+                jpeg, buf = _pop_jpeg_frame(buf, boundary)
+                if jpeg is None:
                     continue
-                if r.status != 200 or len(body) < 1000:
-                    time.sleep(0.05)
+                if not jpeg.startswith(b"\xff\xd8"):
                     continue
-                b64 = extract_b64(body)
-                if not b64:
-                    time.sleep(0.05)
-                    continue
-                raw = base64.b64decode(b64)
-                del body, b64
-                if not raw.startswith(b"\x89PNG") or len(raw) < 50000:
-                    time.sleep(0.05)
-                    continue
+                t_req = time.time()
                 with self.lock:
                     self.grabbed += 1
-                    if t_req > self.raw_ts:      # 只认比上一帧更晚的，乱序旧帧丢掉
-                        self.raw = raw
+                    if t_req >= self.raw_ts:
+                        self.raw = jpeg
                         self.raw_ts = t_req
                         self.raw_new = True
                         self.used += 1
-                    # 否则：这是迟到的一帧旧画面，直接丢，避免画面倒退
             except Exception:
                 try:
                     if conn:
@@ -317,8 +355,10 @@ class RecorderApp:
                 except Exception:
                     pass
                 conn = None
+                resp = None
+                buf = b""
                 self._reconnect()
-                time.sleep(0.12)
+                time.sleep(0.4)
 
     def _reconnect(self):
         """session 失效 / 连不上时，复用 core 的统一重连入口刷新 sid。"""
@@ -636,9 +676,9 @@ class RecorderApp:
             except queue.Empty:
                 continue
 
-            # 注入期间禁止抓帧，免得截图请求把 WDA 队列占满、点击排不上
+            # 注入忙标记（MJPEG 读流走独立长连接、不抢 WDA，这里仅作状态占位）
             self.act_busy.set()
-            time.sleep(0.35)          # 等在飞的截图请求先落地，点击别排在它们后面
+            time.sleep(0.05)         # 极短间隔等队列稳一下；长链接后已无在飞截图请求
             ok, err = True, ""
             try:
                 if kind == "tap":
@@ -675,7 +715,7 @@ class RecorderApp:
             except Exception as e:
                 ok, err = False, f"{type(e).__name__}: {e}"
             finally:
-                time.sleep(0.12)
+                time.sleep(0.05)
                 self.act_busy.clear()
 
             self.root.after(0, self._log_inject, kind, ok, err)

@@ -1,0 +1,25 @@
+{
+  "combos": [
+    {
+      "name": "养号 → 广告咨询",
+      "steps": [
+        {
+          "task": "定向养号",
+          "minutes": 1.0,
+          "app": "nebula",
+          "params": {
+            "keywords": "百度爱采购 知了爱学"
+          }
+        },
+        {
+          "task": "定向养号",
+          "minutes": 1.0,
+          "app": "kuaishou",
+          "params": {
+            "keywords": "百度爱采购 知了爱学"
+          }
+        }
+      ]
+    }
+  ]
+}

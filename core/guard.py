@@ -67,11 +67,15 @@ class IssueGuard:
             return None, None
         return self.checker.match_first(self.issues, items)
 
-    def check_and_handle(self):
-        """检测一次：命中则处置并复核；返回本轮是否命中过分支。"""
+    def check_and_handle(self, items=None):
+        """检测一次：命中则处置并复核；返回本轮是否命中过分支。
+
+        :param items: 外部已识别好的 OcrItem 列表；传入则复用，不再重复截图+OCR，
+                      避免主流程刚识别完、GUARD 又抓一帧（OCR 是单帧主成本）。
+        """
         if not self.issues:
             return False
-        items = self._recognize()
+        items = items if items is not None else self._recognize()
         iss, hit = self._match(items)
         if not iss:
             return False

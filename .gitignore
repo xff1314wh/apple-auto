@@ -23,3 +23,11 @@ data/source_*.xml
 
 # 录制导出的任务脚本（本地生成）
 tasks/录制任务/
+
+# 运行时产物：待办记录 / 抓帧缓存 / 探测输出（体积大或每次运行都变，不上传）
+data/handoff/
+data/shobs/
+data/now_source.xml
+data/_*.txt
+data/_*.log
+data/task_params.json
