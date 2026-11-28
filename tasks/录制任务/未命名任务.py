@@ -457,17 +457,35 @@ def classify(items, nodes=None):
 
 
 # ============ 分支处置 ============
-def wait_countdown():
+def _countdown_done(items):
+    """倒计时是否结束：顶部胶囊变「已成功领取」。
+
+    金币到账提示也是「已成功领取195金币」，从左上角弹出并带「金币」字样，
+    不能当成倒计时结束，否则广告没看完就切条。
+    """
+    for it in items:
+        t = (it.text or "").replace(" ", "")
+        if "已成功领取" not in t:
+            continue
+        cx, cy = it.center
+        if "金币" in t and cx < 150:
+            continue
+        if cy < 130:
+            return True
+    return False
+
+
+def wait_countdown(max_wait=None):
     """等播放页倒计时结束。
 
     走完胶囊变「已成功领取」才往下走；每 COUNTDOWN_GAP 秒 OCR 一次，等待期不做
-    任何操作。不做漏识提前结束：广告没看完不切下一条，等到 VIDEO_WAIT_MAX 超时兜底。
+    任何操作。不做漏识提前结束：广告没看完不切下一条，等到上限超时兜底。
     """
-    deadline = time.time() + VIDEO_WAIT_MAX
+    deadline = time.time() + (max_wait or VIDEO_WAIT_MAX)
     items = shot_items()
     while time.time() < deadline:
-        if hit(items, ["已成功领取"]):
-            log("  倒计时已结束（已成功领取）")
+        if _countdown_done(items):
+            log("  倒计时已结束")
             return
         time.sleep(COUNTDOWN_GAP)
         items = shot_items()
@@ -1303,7 +1321,11 @@ def next_ad():
     items = shot_items()
     GUARD.check_and_handle(items)
     btn = hit(items, ["领取奖励"])
-    tap_item(btn, C_REWARD)
+    if btn is not None:
+        quick.tap2(int(btn.center[0]), int(btn.center[1]))
+    else:
+        # 找不到领取按钮就别按固定坐标乱点：商品/收银台页那一带全是可下单区域
+        log("  没找到「领取奖励」按钮，跳过领取，不乱点")
     time.sleep(POST_OPEN)
 
 
@@ -1329,18 +1351,14 @@ def run_once(round_no):
             kind = classify(items, nodes)
         log(f"  落地页类型：{kind}（第 {depth + 1} 层）")
 
-        if kind == "live":
-            log("  直播页：不互动不领券，直接退出")
-            if not close_ad():
-                fallback_reset = True
-            break
-        if kind == "pay":
-            # 收银台：只退不点，绝不碰底部的「立即支付」
-            if not close_pay():
-                log("  收银台没退出去，停止本条，交给下一轮回链")
-                fallback_reset = True
-            elif not back_to_player():
-                # 收银台后面常还压着商品详情页，继续退到播放页为止
+        if kind in ("pay", "live"):
+            # 商品购买 / 直播页：一律不点击任何内容（不点商品、不下单、不互动），
+            # 只等这条广告的倒计时走完，再切下一条。
+            log(f"  {kind} 页：不点击，等倒计时走完直接下一条")
+            wait_countdown()
+            next_ad()
+            # 兜底：切条没生效、还停在收银台，才走安全退出（依然不碰支付按钮）
+            if _is_pay(shot_items()) and not close_pay():
                 fallback_reset = True
             break
         if kind == "login":
