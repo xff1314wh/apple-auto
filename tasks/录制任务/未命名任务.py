@@ -85,6 +85,9 @@ LEAD_SCROLL_WAIT = 0.15  # 表单上滑到下一屏后的起稳等待（秒）
 CONSULT_BTNS = ["立即咨询", "在线咨询", "免费咨询", "免费预约", "立即预约", "预约咨询",
                 "一键购买", "立即购买", "立即下单", "去购买", "立即抢购",
                 "点击并浏览", "浏览15秒", "浏览 15 秒"]
+# 判定层专用的窄词表：只认「能点进会话」的咨询入口。
+# 不含预约（可能弹日期选择）、不含购买/浏览（那属于商品页与激励弹层）。
+CONSULT_ONLY = ["立即咨询", "在线咨询", "免费咨询", "预约咨询"]
 # 直播页识别特征：source 节点词可直接命中；OCR 走 _ocr_live 加严判定。
 # 「说点什么」只是通用评论框占位，普通广告页也有，单凭它会误判成直播页并整轮空转。
 # 注意：「说点什么」是通用评论框占位，普通广告播放页也有，不能算直播特征
@@ -140,6 +143,7 @@ GUARD = IssueGuard(ISSUES, quick, ocr_mod=ocr_mod, checker_mod=checker_mod,
 # ============ 辅助 ============
 SHOT_DIR = os.path.join(ROOT, "data", "shobs")
 _reported_fp = set()  # 本轮已上报待办的页面指纹（去重）
+_HANDOFF_DOWN_UNTIL = 0.0  # handoff 服务不可达后的冷却截止，避免每轮白等一次探测
 
 
 # 日志级别归类：ERR 失败 > WARN 异常但继续 > PAGE 页面判定 > ACT 动作 > OK 完成
@@ -452,10 +456,12 @@ def classify(items, nodes=None):
         return "phone"
     if hit(items, _EMPTY_WORDS) or _source_hit(nodes, _EMPTY_WORDS):
         return "empty"
-    if hit(items, ["立即咨询"]):
-        return "player"
     if hit(items, ["查看详情", "了解更多"]):
         return "aggregate"
+    # 转化条上的咨询入口：以前只认「立即咨询」并返回 player（不点），
+    # 于是挂着「在线咨询」的落地页落到 unknown，去空滑上报。
+    if hit(items, CONSULT_ONLY) or _source_hit(nodes, CONSULT_ONLY):
+        return "consult"
     return "unknown"
 
 
@@ -504,8 +510,10 @@ def open_consult():
     time.sleep(POST_OPEN)
     # 二次点：若仍是收起卡片，再点一次
     items = shot_items()
-    if hit(items, CONSULT_BTNS):
-        quick.tap2(*C_CONSULT_FOLDED)
+    btn = hit(items, CONSULT_BTNS)
+    if btn is not None:
+        # 展开后按钮位置会变，用新帧坐标，不写死
+        quick.tap2(*btn.center)
         time.sleep(POST_OPEN)
 
 
@@ -891,8 +899,11 @@ def handle_unknown(items, round_no, depth):
     待办留给人工 / Agent 事后处置并回写台账；脚本不阻塞，随后 close_ad 退出本轮。
     :return: True 已接管回放；False 直接走降级兜底退出。
     """
+    global _HANDOFF_DOWN_UNTIL
     if not HANDOFF_ENABLED:
         return False
+    if time.time() < _HANDOFF_DOWN_UNTIL:
+        return False  # 刚探过还没起来，直接降级，不再等
     fp = handoff.fingerprint(items)
     cases = handoff.load_cases()
     hit_case = handoff.match_case(cases, fp)
@@ -904,7 +915,8 @@ def handle_unknown(items, round_no, depth):
         log("  该类页面本轮已记录过，不再重复上报")
         return False
     if not handoff.available():
-        log("  handoff 服务不可达，未知页面记录跳过，降级兜底退出")
+        _HANDOFF_DOWN_UNTIL = time.time() + 120
+        log("  handoff 服务未启动，未知页面记录跳过（2 分钟内不再探测），降级兜底退出")
         return False
     shot_path = save_shot()
     try:
@@ -1372,6 +1384,21 @@ def run_once(round_no):
             break
         if kind == "chat":
             handle_chat()
+            if not close_ad():
+                fallback_reset = True
+            break
+        if kind == "consult":
+            # 挂着咨询入口的落地页：点开它，进了会话就发话术，发完即退。
+            log("  有咨询入口：点开进会话")
+            open_consult()
+            time.sleep(random.uniform(0.6, 1.0))
+            after = shot_items()
+            k2 = classify(after, _xml_nodes())
+            log(f"  点开后判为 {k2}")
+            if k2 in ("lead", "chat"):
+                handle_opened(k2)
+            elif k2 == "pay":
+                close_pay()
             if not close_ad():
                 fallback_reset = True
             break
