@@ -1151,24 +1151,8 @@ def _close_in_zone(items=None, nodes=None):
     W, H = 414, 896
     x0, y0, x1, y1 = (CLOSE_ZONE[0] * W, CLOSE_ZONE[1] * H,
                       CLOSE_ZONE[2] * W, CLOSE_ZONE[3] * H)
-    nodes = nodes or []
-    # ① 右上角区域内的近方形小块（关闭按钮一般 24~56pt 见方）
-    sq = []
-    for n in nodes:
-        cx, cy = n["center"]
-        if not (x0 <= cx <= x1 and y0 <= cy <= y1):
-            continue
-        if 24 <= n["w"] <= 56 and 24 <= n["h"] <= 56 and abs(n["w"] - n["h"]) <= 12:
-            sq.append(n)
-    if sq:
-        n = max(sq, key=lambda x: (x["center"][0], -x["center"][1]))
-        return (int(n["center"][0]), int(n["center"][1]))
-    # ② 大块弹窗容器：取容器右上角内缩 26pt
-    big = [n for n in nodes if n["w"] >= 250 and n["h"] >= 100 and n["center"][1] > 90]
-    if big:
-        b = min(big, key=lambda n: n["y"])
-        return (int(b["x"] + b["w"] - 26), int(b["y"] + 26))
-    # ③ OCR：右上角区域里的 × / 关闭 文本
+    # 只认 OCR 里的 × / 关闭 字符：几何猜测（小方块 / 容器内缩）会猜到图标上，已去掉
+
     for it in (items or []):
         t = (it.text or "").strip()
         cx, cy = it.center
@@ -1212,36 +1196,26 @@ def tap_close(max_tries=3):
 
 
 # 任务中心 / 播放链路运营弹窗与奖励到账弹窗的 OCR 特征词
-POPUP_WORDS = ["瓜分百亿金币", "百亿金币奖池", "第三日瓜分大额金币",
-               "看视频任务奖励", "金币奖励已入账", "继续看视频赚更多"]
+# 只放真正弹窗的标题：任务列表正文里也有「看视频任务奖励 / 金币奖励已入账」这类字样，
+# 放进来会在普通任务中心就误判成弹窗，然后去点右上角空白处。
+POPUP_WORDS = ["瓜分百亿金币", "百亿金币奖池", "第三日瓜分大额金币", "翻倍任务开启"]
 
 
-def close_popup(items):
-    """OCR 命中运营 / 奖励到账弹窗 → 点 source 里「关闭弹窗」节点；找不到回退右上 ×。
+def close_popup(items=None):
+    """关闭运营 / 奖励弹窗：只认 source 里带「关闭」语义的节点。
 
-    弹窗遮罩盖住任务列表 / 广告页，不关会锚错领福利按钮。关闭钮在 source 里 name
-    统一为「关闭弹窗」，高低随弹窗变化，故按节点动态定位，不写死坐标。
-    :return: True 已关闭一个弹窗。
+    弹窗遮罩会盖住任务列表 / 广告页，不关会锚错领福利按钮。这里的判据只有一条：
+    source 里存在 name/value 含「关闭弹窗 / close / dismiss」的节点就点它。
+    不再用 OCR 文案词表判断（任务中心正文本身就有「瓜分百亿金币」这类字），
+    也不再用右上角几何猜坐标（会猜到「金币商城」图标上）。
+    :return: True 关掉了一个弹窗；False 当前没有可关的弹窗。
     """
-    # 有「关闭」语义节点就直接点它：位置随页面变，不依赖固定坐标，也不依赖文案词表
     pos = _close_by_name(_xml_nodes())
-    if pos is not None:
-        quick.tap2(*pos)
-        time.sleep(POST_OPEN)
-        log(f"  已关闭弹窗（source 关闭节点 {pos}）")
-        return True
-    if not hit(items, POPUP_WORDS):
+    if pos is None:
         return False
-    nodes = _xml_nodes()
-    close = next((n for n in nodes
-                  if any(k in (n["name"] or "").lower() for k in ("关闭弹窗", "close", "dismiss"))), None)
-    if close is not None:
-        quick.tap2(*close["center"])
-        log(f"  已关闭弹窗（source 定位 {close['center']}）")
-    else:
-        quick.tap2(374, 183)
-        log("  已关闭弹窗（右上兜底坐标）")
+    quick.tap2(*pos)
     time.sleep(POST_OPEN)
+    log(f"  已关闭弹窗（source 关闭节点 {pos}）")
     return True
 
 
