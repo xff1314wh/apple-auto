@@ -421,6 +421,9 @@ def classify(items, nodes=None):
     """
     if nodes is None:
         nodes = _xml_nodes()
+    # 收银台 / 下单浮层优先级最高：任何交互都可能触发付款
+    if hit(items, PAY_WORDS) or _source_hit(nodes, PAY_WORDS):
+        return "pay"
     # 留资表单页也常挂「请输入手机号码 / 我已阅读并同意」，有可填字段 + 提交按钮时
     # 不算登录墙，否则表单会被判成 login，只退不填。
     if (hit(items, LOGIN_WORDS) or _source_hit(nodes, LOGIN_WORDS)) and not _is_lead_form(nodes, items):
@@ -797,11 +800,52 @@ def browse_in_place(swipes=None, quiet=False):
         log("  无咨询入口：已滑动浏览，准备返回")
 
 
+# 收银台 / 下单浮层特征（命中即高危，禁止点内容区，只退不点）
+PAY_WORDS = ["立即支付", "提交订单", "确认支付", "去支付", "收银台",
+             "微信支付", "支付宝支付", "实付款", "立即下单"]
+
+
+def _is_pay(items=None):
+    """是否停在收银台 / 下单浮层。"""
+    return hit(items or shot_items(), PAY_WORDS) is not None
+
+
+def close_pay(max_tries=4):
+    """退出收银台 / 下单浮层：只点关闭 × 或返回手势，绝不点任何支付按钮。
+
+    × 位置：先按 source 关闭语义节点，再取浮层容器右上角内缩，最后右上角区域；
+    所有点击都限制在 y<700（支付条在底部），点完用支付词是否消失来验证。
+    """
+    log("  收银台页：只退出，不点支付")
+    for i in range(max_tries):
+        items = shot_items()
+        nodes = _xml_nodes()
+        pos = _close_by_name(nodes) or _close_in_zone(items, nodes)
+        if pos is not None and pos[1] < 700 and 30 < pos[0] < 396:
+            quick.tap2(*pos)
+            time.sleep(POST_OPEN)
+            if not _is_pay(shot_items()):
+                log(f"  已退出收银台（点关闭 {pos}）")
+                return True
+            log(f"  {pos} 点了没退出（第 {i + 1}/{max_tries} 次）")
+            continue
+        # 找不到安全的关闭点就只用手势，绝不盲点页面内容
+        quick.go_back(448)
+        time.sleep(POST_OPEN)
+        if not _is_pay(shot_items()):
+            log("  已退出收银台（边缘返回手势）")
+            return True
+        log(f"  手势没退出（第 {i + 1}/{max_tries} 次）")
+    return False
+
+
 def _on_player(items):
     """是否已回到播放页（咨询按钮变体 / 结束胶囊 / 进行胶囊任一命中）。
 
     在线咨询会话页顶部也挂「已成功领取xx金币」，先按会话特征排除，否则会被当成播放页。
     """
+    if _is_pay(items):
+        return False
     if hit(items, _CHAT_WORDS) is not None:
         return False
     return hit(items, CONSULT_BTNS + ["已成功领取", "后可领取", "后可领"]) is not None
@@ -1288,6 +1332,15 @@ def run_once(round_no):
         if kind == "live":
             log("  直播页：不互动不领券，直接退出")
             if not close_ad():
+                fallback_reset = True
+            break
+        if kind == "pay":
+            # 收银台：只退不点，绝不碰底部的「立即支付」
+            if not close_pay():
+                log("  收银台没退出去，停止本条，交给下一轮回链")
+                fallback_reset = True
+            elif not back_to_player():
+                # 收银台后面常还压着商品详情页，继续退到播放页为止
                 fallback_reset = True
             break
         if kind == "login":
