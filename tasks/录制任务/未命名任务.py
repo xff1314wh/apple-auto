@@ -424,6 +424,9 @@ def classify(items, nodes=None):
     # 收银台 / 下单浮层优先级最高：任何交互都可能触发付款
     if hit(items, PAY_WORDS) or _source_hit(nodes, PAY_WORDS):
         return "pay"
+    # 商品广告 / 商品详情：有购买入口，不点任何东西，看完视频直接跳过
+    if hit(items, GOODS_WORDS) or _source_hit(nodes, GOODS_WORDS):
+        return "goods"
     # 留资表单页也常挂「请输入手机号码 / 我已阅读并同意」，有可填字段 + 提交按钮时
     # 不算登录墙，否则表单会被判成 login，只退不填。
     if (hit(items, LOGIN_WORDS) or _source_hit(nodes, LOGIN_WORDS)) and not _is_lead_form(nodes, items):
@@ -821,11 +824,19 @@ def browse_in_place(swipes=None, quiet=False):
 # 收银台 / 下单浮层特征（命中即高危，禁止点内容区，只退不点）
 PAY_WORDS = ["立即支付", "提交订单", "确认支付", "去支付", "收银台",
              "微信支付", "支付宝支付", "实付款", "立即下单"]
+# 商品广告页 / 商品详情页：同样不点，看完视频直接跳过
+GOODS_WORDS = ["主播严选", "加入购物车", "立即购买", "购买后确认收货", "确认收货",
+               "商品规格", "包装规格", "已售", "库存", "领券购买", "店铺优惠"]
 
 
 def _is_pay(items=None):
     """是否停在收银台 / 下单浮层。"""
     return hit(items or shot_items(), PAY_WORDS) is not None
+
+
+def _is_goods(items=None):
+    """是否停在商品广告页 / 商品详情页（有购买动作，一律不点）。"""
+    return hit(items or shot_items(), GOODS_WORDS) is not None
 
 
 def close_pay(max_tries=4):
@@ -862,7 +873,7 @@ def _on_player(items):
 
     在线咨询会话页顶部也挂「已成功领取xx金币」，先按会话特征排除，否则会被当成播放页。
     """
-    if _is_pay(items):
+    if _is_pay(items) or _is_goods(items):
         return False
     if hit(items, _CHAT_WORDS) is not None:
         return False
@@ -1354,8 +1365,8 @@ def run_once(round_no):
             kind = classify(items, nodes)
         log(f"  落地页类型：{kind}（第 {depth + 1} 层）")
 
-        if kind in ("pay", "live"):
-            # 商品购买 / 直播页：一律不点击任何内容（不点商品、不下单、不互动），
+        if kind in ("pay", "live", "goods"):
+            # 商品购买 / 商品详情 / 直播页：一律不点击任何内容（不点商品、不下单、不互动），
             # 只等这条广告的倒计时走完，再切下一条。
             log(f"  {kind} 页：不点击，等倒计时走完直接下一条")
             wait_countdown()
