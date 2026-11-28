@@ -310,14 +310,32 @@ def _fingerprint(items):
 # 直播页识别特征词（OCR 命中即判直播：不看完播、不互动，直接切走）
 LIVE_OCR_WORDS = ["正在直播", "人在线", "在线人数", "观众榜", "讲解中"]
 
-# 跳转第三方 App / H5 的强特征词（命中即视为离开了快手）
-THIRD_PARTY_WORDS = ["淘宝", "闪购", "支付宝", "余额宝", "市民中心", "美团",
-                     "京东", "拼多多", "高德", "蚂蚁保", "外卖", "打车"]
+# 快手系全部 bundleId（前台是其中之一就不算跳第三方）
+KUAISHOU_BUNDLES = set(APP_BUNDLES.values())
+# bundle 取不到时的 OCR 兜底词表：只留强特征，去掉「外卖 / 打车 / 高德」这类
+# 页面文案里遍地都是的泛词，且要求同时命中 3 个才算
+_THIRD_WORDS = ["淘宝", "支付宝", "京东", "拼多多", "美团", "闪购"]
 
 
-def _is_third_party(items):
+def _is_third_party(items=None):
+    """是否真的跳到了快手以外的 App：只认前台 bundleId。
+
+    以前是靠 OCR 词表判的（淘宝 / 美团 / 京东 / 外卖 / 打车…），但「页面文字里有
+    这些词」和「人在别的 App 里」是两回事：搜「百度爱采购」这种 B2B 词，结果页的
+    标题、封面、评论里到处是「淘宝」「拼多多」货源对比，搜索完几秒就被判成跳转第三方，
+    白退一次还要冷启动重来。前台 bundle 是硬真值，快手 App 里页面写什么都不算跳转。
+    """
+    try:
+        cur = quick.active_bundle()
+    except Exception:
+        cur = ""
+    if cur:
+        return cur not in KUAISHOU_BUNDLES
+    # bundle 取不到（WDA session 抖动）才退回 OCR：强词扎堆 3 个以上，单个词不算
+    if items is None:
+        return False
     text = " ".join(getattr(it, "text", "") or "" for it in items).lower()
-    return any(w.lower() in text for w in THIRD_PARTY_WORDS)
+    return sum(1 for w in _THIRD_WORDS if w.lower() in text) >= 3
 
 
 def _is_live(items):
