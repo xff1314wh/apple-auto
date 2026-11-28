@@ -1013,9 +1013,12 @@ def close_ad(max_layers=8):
 # 聚合页随机点击要绕开的按钮 / 表单 / 导航类文案
 _AGG_AVOID = ["去看看", "立即领取", "领福利", "已领取", "返回", "关闭", "跳过", "下载",
               "立即下载", "打开", "立即打开", "查看更多", "查看详情", "同意并提交", "提交",
-              "获取验证码", "免费试听", "到店礼", "去购买", "立即抢购", "领券", "预约"]
-_AGG_SHAPE = ["学校", "店", "馆", "中心", "教育", "医院", "门诊", "人均", "¥", "折",
-              "团购", "套餐", "起", "培训", "画室", "基地"]
+              "获取验证码", "免费试听", "到店礼", "去购买", "立即抢购", "领券", "预约",
+              # 商品类一律不点：点进去就是商品详情 / 下单收银台，有付款风险
+              "￥", "¥", "包邮", "现货", "发货", "购买", "下单", "支付", "团购", "套餐",
+              "人均", "销量", "评价", "抢购", "秒杀", "优惠券", "已售"]
+_AGG_SHAPE = ["学校", "店", "馆", "中心", "教育", "医院", "门诊", "培训", "画室", "基地",
+              "机构", "咨询"]
 
 
 def tap_in_aggregate(items):
@@ -1402,14 +1405,7 @@ def run_once(round_no):
                     if kind_after in ("lead", "chat"):
                         # 点开的正是留资表单 / 在线咨询，按对应流程走完再退
                         handle_opened(kind_after)
-                    elif kind_after == "aggregate" and tap_in_aggregate(after):
-                        # 点了个不跳转的，再随机点一个（最多两次，不来回磨）
-                        time.sleep(random.uniform(0.6, 1.2))
-                        after = shot_items()
-                        kind_after = classify(after, _xml_nodes())
-                        log(f"  二次点开后判为 {kind_after}")
-                        if kind_after in ("lead", "chat"):
-                            handle_opened(kind_after)
+                    # 点开还是聚合/详情页就不再点第二个：详情页里再点容易钻进商品和下单页
                     elif kind_after == "unknown":
                         # 详情页里咨询入口常埋在下面：往下滚一屏再判一次
                         browse_in_place(1, quiet=True)
